@@ -17,8 +17,7 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-const KASSEN_CHANNEL_ID = "1516006332975546368";
-
+// Produkte
 const PRODUKTE = {
     "SchniPo": 420,
     "Fleischsalat": 400,
@@ -28,9 +27,11 @@ const PRODUKTE = {
     "Cola/Cappuccino": 300
 };
 
+// Umsatzspeicher
 const sales = {};
-let kasseLock = false;
-let lastKasseMessageId = null;
+
+// Speichert pro Channel die aktive Kasse
+const activeKassen = {};
 
 client.once('ready', async () => {
     console.log(`🤖 Online als ${client.user.tag}`);
@@ -38,11 +39,11 @@ client.once('ready', async () => {
     await client.application.commands.set([
         new SlashCommandBuilder()
             .setName('kasse')
-            .setDescription('Kasse erstellen'),
+            .setDescription('Erstellt eine neue Kasse'),
 
         new SlashCommandBuilder()
             .setName('umsatz')
-            .setDescription('Umsatz anzeigen')
+            .setDescription('Zeigt Umsatz eines Users')
             .addUserOption(opt =>
                 opt.setName('user')
                     .setDescription('User auswählen')
@@ -55,30 +56,19 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
 
+    // =========================
     // /kasse
-    if (interaction.isChatInputCommand() && interaction.commandName === 'kasse') {
+    // =========================
+    if (interaction.isChatInputCommand() && interaction.commandName === "kasse") {
 
-        if (kasseLock) {
-            return interaction.reply({
-                content: "⏳ Kasse läuft bereits...",
-                ephemeral: true
-            });
-        }
+        const channel = interaction.channel;
 
-        kasseLock = true;
-        setTimeout(() => kasseLock = false, 3000);
-
-        const channel = await client.channels.fetch(KASSEN_CHANNEL_ID);
-
-        // Alte Kasse löschen
-        const messages = await channel.messages.fetch({ limit: 20 });
-
-        for (const msg of messages.values()) {
-            if (msg.author.id === client.user.id && msg.components.length > 0) {
-                try {
-                    await msg.delete();
-                } catch {}
-            }
+        // Alte Kasse im selben Channel löschen
+        if (activeKassen[channel.id]) {
+            try {
+                const oldMsg = await channel.messages.fetch(activeKassen[channel.id]);
+                if (oldMsg) await oldMsg.delete();
+            } catch {}
         }
 
         const produktListe = Object.entries(PRODUKTE)
@@ -91,7 +81,7 @@ client.on('interactionCreate', async (interaction) => {
             .setDescription(produktListe);
 
         const button = new ButtonBuilder()
-            .setCustomId('open_kasse')
+            .setCustomId(`open_kasse_${channel.id}`)
             .setLabel('🧾 Rechnung erstellen')
             .setStyle(ButtonStyle.Success);
 
@@ -102,7 +92,7 @@ client.on('interactionCreate', async (interaction) => {
             components: [row]
         });
 
-        lastKasseMessageId = msg.id;
+        activeKassen[channel.id] = msg.id;
 
         return interaction.reply({
             content: "✅ Kasse erstellt",
@@ -110,22 +100,24 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 
-    // Button
-    if (interaction.isButton() && interaction.customId === 'open_kasse') {
+    // =========================
+    // BUTTON
+    // =========================
+    if (interaction.isButton() && interaction.customId.startsWith("open_kasse_")) {
 
         const modal = new ModalBuilder()
-            .setCustomId('kasse_modal')
-            .setTitle('🧾 Rechnung erstellen');
+            .setCustomId(`kasse_modal_${interaction.channel.id}`)
+            .setTitle("🧾 Rechnung erstellen");
 
         const input = new TextInputBuilder()
-            .setCustomId('items')
-            .setLabel('Produkte (jede Zeile ein Produkt)')
+            .setCustomId("items")
+            .setLabel("Produkte (jede Zeile ein Produkt)")
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true);
 
         const rabatt = new TextInputBuilder()
-            .setCustomId('rabatt')
-            .setLabel('Rabatt % (optional)')
+            .setCustomId("rabatt")
+            .setLabel("Rabatt % (optional)")
             .setStyle(TextInputStyle.Short)
             .setRequired(false);
 
@@ -137,13 +129,14 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
     }
 
-    // Modal
-    if (interaction.isModalSubmit() && interaction.customId === 'kasse_modal') {
+    // =========================
+    // MODAL
+    // =========================
+    if (interaction.isModalSubmit() && interaction.customId.startsWith("kasse_modal_")) {
 
-        const text = interaction.fields.getTextInputValue('items');
-        const rabatt = Number(interaction.fields.getTextInputValue('rabatt')) || 0;
+        const text = interaction.fields.getTextInputValue("items");
+        const rabatt = Number(interaction.fields.getTextInputValue("rabatt")) || 0;
 
-        // 🔥 Jetzt untereinander statt Komma
         const items = text.split('\n').map(i => i.trim()).filter(Boolean);
 
         let total = 0;
@@ -165,10 +158,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 if (match) {
                     productFound = productName;
-
-                    let qtyRaw = match[1].toLowerCase().replace(/x/g, '');
-                    qty = parseInt(qtyRaw);
-
+                    qty = parseInt(match[1].toLowerCase().replace(/x/g, ""));
                     break;
                 }
             }
@@ -188,6 +178,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const final = total - (total * rabatt / 100);
 
+        // Umsatz addieren
         const userId = interaction.user.id;
 
         if (!sales[userId]) {
@@ -202,32 +193,32 @@ client.on('interactionCreate', async (interaction) => {
         sales[userId].count += 1;
 
         const embed = new EmbedBuilder()
-            .setTitle('🧾 KASSENBON')
+            .setTitle("🧾 KASSENBON")
             .setColor(0xf1c40f)
             .setDescription(lines.join('\n'))
             .addFields(
-                { name: '💸 Rabatt', value: `${rabatt}%`, inline: true },
-                { name: '💰 Gesamt', value: `${final.toFixed(0)}€`, inline: true }
+                { name: "💸 Rabatt", value: `${rabatt}%`, inline: true },
+                { name: "💰 Gesamt", value: `${final.toFixed(0)}€`, inline: true }
             )
             .setFooter({
                 text: `Kassierer: ${interaction.user.username}`
             });
 
-        const channel = await client.channels.fetch(KASSEN_CHANNEL_ID);
+        const channel = interaction.channel;
 
-        await channel.send({ embeds: [embed] });
+        await channel.send({
+            embeds: [embed]
+        });
 
         // Kasse löschen
         try {
-            const kasseMsg = await channel.messages.fetch(lastKasseMessageId);
+            const kasseMsg = await channel.messages.fetch(activeKassen[channel.id]);
 
             if (kasseMsg) {
                 await kasseMsg.delete();
-                lastKasseMessageId = null;
+                delete activeKassen[channel.id];
             }
-        } catch {
-            console.log("Kasse konnte nicht gelöscht werden");
-        }
+        } catch {}
 
         return interaction.reply({
             content: "✅ Rechnung erstellt & Kasse geschlossen",
@@ -235,10 +226,12 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 
+    // =========================
     // /umsatz
-    if (interaction.isChatInputCommand() && interaction.commandName === 'umsatz') {
+    // =========================
+    if (interaction.isChatInputCommand() && interaction.commandName === "umsatz") {
 
-        const user = interaction.options.getUser('user');
+        const user = interaction.options.getUser("user");
         const data = sales[user.id];
 
         if (!data) {
@@ -254,6 +247,10 @@ client.on('interactionCreate', async (interaction) => {
 💰 Gesamtumsatz: ${data.total.toFixed(0)}€
 🧾 Rechnungen: ${data.count}`
         );
+    }
+});
+
+client.login(process.env.TOKEN);
     }
 });
 

@@ -24,7 +24,8 @@ const PRODUKTE = {
     "Bier": 350,
     "Whisky": 500,
     "Whisky Cola": 500,
-    "Cola/Cappuccino": 300
+    "Cola": 300,
+    "Cappuccino": 300
 };
 
 // Umsatz
